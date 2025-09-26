@@ -4,3 +4,4 @@ Snake, but for packaging. You’re a roll of tape sealing cartons on a line.
 
 **Controls:** Arrow keys or WASD · P = pause · R = restart  
 **Tech:** Vanilla JavaScript + HTML5 Canvas, hosted on GitHub Pages.
+
