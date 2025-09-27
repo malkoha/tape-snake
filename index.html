@@ -21,84 +21,98 @@
 </div>
 
 <script>
+/* ========== Canvas / grid ========== */
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
-const TILE = 24, COLS = Math.floor(canvas.width/TILE), ROWS = Math.floor(canvas.height/TILE);
-const COL = { bg:"#0e1116", containerStripe:"#1b2030", tape:"#f5d27b", tapeSeam:"#e9c56a", text:"#dbe2ff" };
+const TILE = 24;
+const COLS = Math.floor(canvas.width/TILE);
+const ROWS = Math.floor(canvas.height/TILE);
 
-/* ---------- BOX SPRITES (random + rotate + transparent-edge cropping) ---------- */
-const BOX_FILES = ['Sprite-0020.png','Sprite-0021.png','Sprite-0022.png','Sprite-0023.png']; // files beside index.html
-const BOX_PAD   = 2;      // inset inside tile
-const BOX_SCALE = 1.05;   // 1.0 fills (TILE-2*PAD); bump if sprites still look a hair small
+const COL = { bg:"#0e1116", tape:"#f5d27b", tapeSeam:"#e9c56a", text:"#dbe2ff" };
 
-// Each entry becomes: { img, sx, sy, sw, sh } where (sx,sy,sw,sh) is the tight opaque crop
-const BOX_SPRITES = [];
-let _pendingLoads = BOX_FILES.length;
+/* ========== BACKGROUND from tiles.png (single tile OR tileset) ==========
 
-BOX_FILES.forEach((src)=>{
-  const img = new Image();
-  img.onload = () => {
-    const crop = cropOpaque(img);
-    BOX_SPRITES.push({ img, ...crop });
-    _pendingLoads--;
-    // If food exists but had no sprite (e.g., spawned before loads finished), give it one now
-    if (typeof food === 'object' && !food.sprite && BOX_SPRITES.length) {
-      food.sprite = randChoice(BOX_SPRITES);
-      food.rotation = randRotation();
-    }
-  };
-  img.onerror = () => {
-    console.warn('Could not load sprite:', src);
-    _pendingLoads--;
-  };
-  img.src = src;
-});
+Place tiles.png next to index.html.
 
-function cropOpaque(img){
-  // Find tight bounding box of non-transparent pixels
-  const w = img.width, h = img.height;
+- If tiles.png is 16x16, we scale it (integer) and repeat.
+- If it's a sheet (e.g., 96x96), we crop one cell (TILE_COL/TILE_ROW) and repeat.
+*/
+const SHEET_CELL = 16;     // inner cell size inside tiles.png if it's a sheet
+const SHEET_GUTTER = 0;    // set 1 if your sheet has 1px gaps
+const BG_SCALE = 3;        // 2/3/4 -> keeps pixels chunky
+const TILE_COL = 2;        // only used when tiles.png is a sheet
+const TILE_ROW = 1;
+
+const bgImg = new Image();
+bgImg.src = 'tiles.png';
+let bgPattern = null;
+
+bgImg.onload = () => {
+  const single = (bgImg.width === SHEET_CELL && bgImg.height === SHEET_CELL);
   const off = document.createElement('canvas');
-  off.width = w; off.height = h;
   const octx = off.getContext('2d');
   octx.imageSmoothingEnabled = false;
-  octx.drawImage(img, 0, 0);
-  const data = octx.getImageData(0,0,w,h).data;
 
+  if (single){
+    off.width = bgImg.width * BG_SCALE;
+    off.height = bgImg.height * BG_SCALE;
+    octx.drawImage(bgImg, 0, 0, off.width, off.height);
+  }else{
+    const sx = TILE_COL*(SHEET_CELL+SHEET_GUTTER) + SHEET_GUTTER;
+    const sy = TILE_ROW*(SHEET_CELL+SHEET_GUTTER) + SHEET_GUTTER;
+    off.width = SHEET_CELL * BG_SCALE;
+    off.height = SHEET_CELL * BG_SCALE;
+    octx.drawImage(bgImg, sx, sy, SHEET_CELL, SHEET_CELL, 0, 0, off.width, off.height);
+  }
+  bgPattern = ctx.createPattern(off, 'repeat');
+};
+
+/* ========== BOX SPRITES (crop transparent edges, rotate, fill cell) ========== */
+const BOX_FILES = ['Sprite-0020.png','Sprite-0021.png','Sprite-0022.png','Sprite-0023.png'];
+const BOX_PAD = 2;       // inset from tile edge
+const BOX_SCALE = 1.08;  // bump if PNGs still look a hair small
+
+const BOX_SPRITES = [];  // each: {img, sx, sy, sw, sh}
+BOX_FILES.forEach(src=>{
+  const img=new Image();
+  img.onload=()=>BOX_SPRITES.push({img, ...tightCrop(img)});
+  img.src=src;
+});
+
+function tightCrop(img){
+  const w=img.width, h=img.height;
+  const off=document.createElement('canvas'); off.width=w; off.height=h;
+  const octx=off.getContext('2d'); octx.imageSmoothingEnabled=false;
+  octx.drawImage(img,0,0);
+  const data=octx.getImageData(0,0,w,h).data;
   let minX=w, minY=h, maxX=-1, maxY=-1;
-  for (let y=0; y<h; y++){
-    for (let x=0; x<w; x++){
-      const a = data[(y*w + x)*4 + 3];
-      if (a > 8){ // alpha threshold
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const a=data[(y*w+x)*4+3];
+    if(a>8){ if(x<minX)minX=x; if(y<minY)minY=y; if(x>maxX)maxX=x; if(y>maxY)maxY=y; }
   }
-  if (maxX < minX || maxY < minY){
-    // completely transparent? fall back to full image
-    return { sx:0, sy:0, sw:w, sh:h };
-  }
-  return { sx:minX, sy:minY, sw:(maxX-minX+1), sh:(maxY-minY+1) };
+  if(maxX<minX||maxY<minY) return {sx:0,sy:0,sw:w,sh:h}; // fully transparent fallback
+  return {sx:minX, sy:minY, sw:maxX-minX+1, sh:maxY-minY+1};
 }
+const randi=n=>Math.floor(Math.random()*n);
+const choice=a=>a[randi(a.length)];
+const randRot=()=> (randi(4)*Math.PI)/2;
 
-function randInt(n){ return Math.floor(Math.random()*n); }
-function randChoice(arr){ return arr[randInt(arr.length)]; }
-function randRotation(){ return (randInt(4) * Math.PI) / 2; } // 0/90/180/270
-
-/* ---------- GAME STATE ---------- */
+/* ========== Game state ========== */
 let state="menu", score=0, speed=8, levelSpeed=1, tick=0;
 let snake, dir, nextDir, food, tailGrow;
 
-const INPUTS=[], DIRS={ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0},w:{x:0,y:-1},s:{x:0,y:1},a:{x:-1,y:0},d:{x:1,y:0}};
+const INPUTS=[], DIRS={
+  ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0},
+  w:{x:0,y:-1},s:{x:0,y:1},a:{x:-1,y:0},d:{x:1,y:0}
+};
+
 addEventListener('keydown', e=>{
-  if (e.key==='p'||e.key==='P'){ state=state==='playing'?'paused':state==='paused'?'playing':state; showOverlay(); return; }
-  if (e.key==='r'||e.key==='R'){ reset(); state='playing'; showOverlay(); return; }
-  if (state==='menu'){ reset(); state='playing'; showOverlay(); return; }
-  if (state==='gameOver'){ reset(); state='playing'; showOverlay(); return; }
+  if(e.key==='p'||e.key==='P'){ state=state==='playing'?'paused':state==='paused'?'playing':state; showOverlay(); return; }
+  if(e.key==='r'||e.key==='R'){ reset(); state='playing'; showOverlay(); return; }
+  if(state==='menu'){ reset(); state='playing'; showOverlay(); return; }
+  if(state==='gameOver'){ reset(); state='playing'; showOverlay(); return; }
   const v=DIRS[e.key]; if(!v) return; INPUTS.push(v);
 });
 
@@ -114,11 +128,8 @@ function spawnFood(){
   while(true){
     const gx=(Math.random()*COLS|0), gy=(Math.random()*ROWS|0);
     if (snake.some(s=>s.x===gx&&s.y===gy)) continue;
-
-    // Choose a sprite if any are loaded; otherwise we’ll fill with a placeholder
-    const sprite = BOX_SPRITES.length ? randChoice(BOX_SPRITES) : null;
-    const rotation = randRotation();
-    return { x:gx, y:gy, sprite, rotation };
+    const sprite = BOX_SPRITES.length ? choice(BOX_SPRITES) : null;
+    return { x:gx, y:gy, sprite, rotation: randRot() };
   }
 }
 
@@ -131,12 +142,14 @@ function consumeInput(){
 }
 
 function update(){
-  if(state!=='playing') return; tick++; if(tick%speed) return;
+  if(state!=='playing') return;
+  tick++; if(tick%speed) return;
 
   consumeInput(); dir=nextDir;
   const head={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
   if(head.x<0||head.y<0||head.x>=COLS||head.y>=ROWS){ state='gameOver'; showOverlay(); return; }
   if(snake.some(s=>s.x===head.x&&s.y===head.y)){ state='gameOver'; showOverlay(); return; }
+
   snake.unshift(head);
 
   if(head.x===food.x&&head.y===food.y){
@@ -148,40 +161,43 @@ function update(){
 }
 
 function draw(){
-  // Background (your corrugation stripes)
-  ctx.fillStyle=COL.bg; ctx.fillRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle=COL.containerStripe; for(let y=0;y<ROWS;y+=2) ctx.fillRect(0,y*TILE,canvas.width,1);
+  // --- background pattern or solid fallback ---
+  if (bgPattern){
+    ctx.save(); ctx.imageSmoothingEnabled=false;
+    ctx.fillStyle = bgPattern;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.restore();
+  } else {
+    ctx.fillStyle=COL.bg; ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
 
-  // Food (sprite scaled to the cell; croppped to opaque content)
-  drawFood(food.x,food.y,food.sprite,food.rotation);
+  // --- food sprite ---
+  drawFood(food.x, food.y, food.sprite, food.rotation);
 
-  // Tape
+  // --- snake ---
   drawTape();
 }
 
-function drawFood(gx,gy,spriteObj,rotationRad){
-  const tileX = gx*TILE, tileY = gy*TILE;
-  const avail = TILE - BOX_PAD*2;
-  const drawSize = Math.round(avail * BOX_SCALE);
+function drawFood(gx,gy,sprite,rot){
+  const x=gx*TILE, y=gy*TILE;
+  const max = TILE - BOX_PAD*2;
+  const size = Math.round(max * BOX_SCALE);
 
-  // If sprite not ready yet, draw a full-size placeholder
-  if(!spriteObj || !spriteObj.img || !spriteObj.img.complete || spriteObj.img.naturalWidth===0){
-    ctx.fillStyle = "#c9a66b";
-    ctx.fillRect(tileX+BOX_PAD, tileY+BOX_PAD, drawSize, drawSize);
+  if(!sprite || !sprite.img || !sprite.img.complete || sprite.img.naturalWidth===0){
+    // placeholder fills cell
+    ctx.fillStyle="#c9a66b";
+    ctx.fillRect(x+BOX_PAD, y+BOX_PAD, size, size);
     return;
   }
 
-  const { img, sx, sy, sw, sh } = spriteObj;
-
-  const cx = tileX + TILE/2;
-  const cy = tileY + TILE/2;
+  const {img,sx,sy,sw,sh} = sprite;
+  const cx = x + TILE/2, cy = y + TILE/2;
 
   ctx.save();
-  ctx.imageSmoothingEnabled = false;
+  ctx.imageSmoothingEnabled=false;
   ctx.translate(cx, cy);
-  ctx.rotate(rotationRad);
-  // Draw the CROPPED portion of the image scaled to the tile size
-  ctx.drawImage(img, sx, sy, sw, sh, -drawSize/2, -drawSize/2, drawSize, drawSize);
+  ctx.rotate(rot);
+  ctx.drawImage(img, sx, sy, sw, sh, -size/2, -size/2, size, size);
   ctx.restore();
 }
 
@@ -199,7 +215,7 @@ function drawTape(){
   }
 }
 
-/* ---------- HUD / OVERLAY ---------- */
+/* ========== HUD / overlay ========== */
 const hud=document.getElementById('hud'), overlay=document.getElementById('overlay');
 function updateHUD(){ hud.textContent=`Score: ${score} · Speed: ${levelSpeed}`; }
 function showOverlay(){
@@ -210,6 +226,7 @@ function showOverlay(){
   overlay.style.display=(state==='playing')?'none':'block';
 }
 
+/* ========== Main loop ========== */
 function loop(){ update(); draw(); requestAnimationFrame(loop); }
 reset(); showOverlay(); loop();
 </script>
