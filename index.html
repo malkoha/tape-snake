@@ -25,17 +25,71 @@ const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
-// ===== GRID / COLORS =====
 const TILE = 24, COLS = Math.floor(canvas.width/TILE), ROWS = Math.floor(canvas.height/TILE);
 const COL = { bg:"#0e1116", containerStripe:"#1b2030", tape:"#f5d27b", tapeSeam:"#e9c56a", text:"#dbe2ff" };
 
-// ===== BOX SPRITES (fills cell; tweak PAD/SCALE if needed) =====
-const BOX_FILES = ['Sprite-0020.png','Sprite-0021.png','Sprite-0022.png','Sprite-0023.png'];
-const BOX_SPRITES = BOX_FILES.map(src => { const i = new Image(); i.src = src; return i; });
-const BOX_PAD = 2;          // inset from tile edge (px)
-const BOX_SCALE = 1.0;      // 1.0 fills (TILE - 2*PAD). Try 1.1 if your PNGs have transparent margins.
+/* ---------- BOX SPRITES (random + rotate + transparent-edge cropping) ---------- */
+const BOX_FILES = ['Sprite-0020.png','Sprite-0021.png','Sprite-0022.png','Sprite-0023.png']; // files beside index.html
+const BOX_PAD   = 2;      // inset inside tile
+const BOX_SCALE = 1.05;   // 1.0 fills (TILE-2*PAD); bump if sprites still look a hair small
 
-// ===== GAME STATE =====
+// Each entry becomes: { img, sx, sy, sw, sh } where (sx,sy,sw,sh) is the tight opaque crop
+const BOX_SPRITES = [];
+let _pendingLoads = BOX_FILES.length;
+
+BOX_FILES.forEach((src)=>{
+  const img = new Image();
+  img.onload = () => {
+    const crop = cropOpaque(img);
+    BOX_SPRITES.push({ img, ...crop });
+    _pendingLoads--;
+    // If food exists but had no sprite (e.g., spawned before loads finished), give it one now
+    if (typeof food === 'object' && !food.sprite && BOX_SPRITES.length) {
+      food.sprite = randChoice(BOX_SPRITES);
+      food.rotation = randRotation();
+    }
+  };
+  img.onerror = () => {
+    console.warn('Could not load sprite:', src);
+    _pendingLoads--;
+  };
+  img.src = src;
+});
+
+function cropOpaque(img){
+  // Find tight bounding box of non-transparent pixels
+  const w = img.width, h = img.height;
+  const off = document.createElement('canvas');
+  off.width = w; off.height = h;
+  const octx = off.getContext('2d');
+  octx.imageSmoothingEnabled = false;
+  octx.drawImage(img, 0, 0);
+  const data = octx.getImageData(0,0,w,h).data;
+
+  let minX=w, minY=h, maxX=-1, maxY=-1;
+  for (let y=0; y<h; y++){
+    for (let x=0; x<w; x++){
+      const a = data[(y*w + x)*4 + 3];
+      if (a > 8){ // alpha threshold
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY){
+    // completely transparent? fall back to full image
+    return { sx:0, sy:0, sw:w, sh:h };
+  }
+  return { sx:minX, sy:minY, sw:(maxX-minX+1), sh:(maxY-minY+1) };
+}
+
+function randInt(n){ return Math.floor(Math.random()*n); }
+function randChoice(arr){ return arr[randInt(arr.length)]; }
+function randRotation(){ return (randInt(4) * Math.PI) / 2; } // 0/90/180/270
+
+/* ---------- GAME STATE ---------- */
 let state="menu", score=0, speed=8, levelSpeed=1, tick=0;
 let snake, dir, nextDir, food, tailGrow;
 
@@ -57,35 +111,32 @@ function reset(){
 }
 
 function spawnFood(){
-  // pick a free grid cell
   while(true){
     const gx=(Math.random()*COLS|0), gy=(Math.random()*ROWS|0);
     if (snake.some(s=>s.x===gx&&s.y===gy)) continue;
-    // attach a random sprite + rotation (0/90/180/270)
-    const sprite = BOX_SPRITES[(Math.random()*BOX_SPRITES.length)|0];
-    const rotation = ((Math.random()*4)|0) * Math.PI/2;
-    return {x:gx, y:gy, sprite, rotation};
+
+    // Choose a sprite if any are loaded; otherwise we’ll fill with a placeholder
+    const sprite = BOX_SPRITES.length ? randChoice(BOX_SPRITES) : null;
+    const rotation = randRotation();
+    return { x:gx, y:gy, sprite, rotation };
   }
 }
 
 function consumeInput(){
   while(INPUTS.length){
     const cand=INPUTS.shift();
-    if(snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue; // prevent 180° reverse
+    if(snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue;
     nextDir=cand; return;
   }
 }
 
 function update(){
-  if(state!=='playing') return;
-  tick++; if(tick%speed) return;
+  if(state!=='playing') return; tick++; if(tick%speed) return;
 
   consumeInput(); dir=nextDir;
   const head={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
-
   if(head.x<0||head.y<0||head.x>=COLS||head.y>=ROWS){ state='gameOver'; showOverlay(); return; }
   if(snake.some(s=>s.x===head.x&&s.y===head.y)){ state='gameOver'; showOverlay(); return; }
-
   snake.unshift(head);
 
   if(head.x===food.x&&head.y===food.y){
@@ -97,35 +148,40 @@ function update(){
 }
 
 function draw(){
-  // background (your old corrugation)
+  // Background (your corrugation stripes)
   ctx.fillStyle=COL.bg; ctx.fillRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle=COL.containerStripe; for(let y=0;y<ROWS;y+=2) ctx.fillRect(0,y*TILE,canvas.width,1);
 
-  // draw food sprite (fills cell)
-  drawFood(food.x, food.y, food.sprite, food.rotation);
+  // Food (sprite scaled to the cell; croppped to opaque content)
+  drawFood(food.x,food.y,food.sprite,food.rotation);
 
-  // draw tape snake
+  // Tape
   drawTape();
 }
 
-function drawFood(gx, gy, sprite, rotationRad){
-  const x = gx*TILE, y = gy*TILE;
-  const max = TILE - BOX_PAD*2;
-  const size = Math.round(max * BOX_SCALE);
+function drawFood(gx,gy,spriteObj,rotationRad){
+  const tileX = gx*TILE, tileY = gy*TILE;
+  const avail = TILE - BOX_PAD*2;
+  const drawSize = Math.round(avail * BOX_SCALE);
 
-  // if image not ready, draw a placeholder that fills the cell
-  if(!sprite || !sprite.complete || sprite.naturalWidth===0){
+  // If sprite not ready yet, draw a full-size placeholder
+  if(!spriteObj || !spriteObj.img || !spriteObj.img.complete || spriteObj.img.naturalWidth===0){
     ctx.fillStyle = "#c9a66b";
-    ctx.fillRect(x+BOX_PAD, y+BOX_PAD, size, size);
+    ctx.fillRect(tileX+BOX_PAD, tileY+BOX_PAD, drawSize, drawSize);
     return;
   }
 
-  const cx = x + TILE/2, cy = y + TILE/2;
+  const { img, sx, sy, sw, sh } = spriteObj;
+
+  const cx = tileX + TILE/2;
+  const cy = tileY + TILE/2;
+
   ctx.save();
   ctx.imageSmoothingEnabled = false;
   ctx.translate(cx, cy);
   ctx.rotate(rotationRad);
-  ctx.drawImage(sprite, -size/2, -size/2, size, size);
+  // Draw the CROPPED portion of the image scaled to the tile size
+  ctx.drawImage(img, sx, sy, sw, sh, -drawSize/2, -drawSize/2, drawSize, drawSize);
   ctx.restore();
 }
 
@@ -143,7 +199,7 @@ function drawTape(){
   }
 }
 
-// ===== HUD / OVERLAY =====
+/* ---------- HUD / OVERLAY ---------- */
 const hud=document.getElementById('hud'), overlay=document.getElementById('overlay');
 function updateHUD(){ hud.textContent=`Score: ${score} · Speed: ${levelSpeed}`; }
 function showOverlay(){
