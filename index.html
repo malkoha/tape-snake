@@ -29,7 +29,10 @@ ctx.imageSmoothingEnabled = false;
 const TILE = 24;
 const COLS = Math.floor(canvas.width / TILE);
 const ROWS = Math.floor(canvas.height / TILE);
-const BOX_PAD = 3;
+
+// Box drawing tweaks
+const BOX_PAD   = 2;     // inset from cell edges
+const BOX_SCALE = 1.25;  // scale sprite inside the cell (1.0..1.5 is reasonable)
 
 const COL = {
   bg: "#0e1116",
@@ -38,36 +41,48 @@ const COL = {
   text: "#dbe2ff"
 };
 
-/* ===== Background using tiles.png ===== */
-const TILESET_SIZE = 16;
-const TILE_SCALE = 3;
-const TILE_COL = 2;
-const TILE_ROW = 1;
-const TILE_GUTTER = 0;
+/* ===== Background: tiles.png (single tile or tileset) =====
+   - If tiles.png is 16x16 (single tile), use it directly.
+   - If it's a sheet (e.g., 96x96), pick (TILE_COL, TILE_ROW) from the grid.
+*/
+const SHEET_TILE_SIZE = 16;  // each cell inside the sheet
+const SHEET_GUTTER    = 0;   // set to 1 if your sheet has 1px padding between tiles
+const SHEET_SCALE     = 3;   // integer 2/3/4 for chunky pixels
+const TILE_COL        = 2;   // 0-based, only used when tiles.png is a sheet
+const TILE_ROW        = 1;
 
-const tileset = new Image();
-tileset.src = 'tiles.png';
+const tilesImg = new Image();
+tilesImg.src = 'tiles.png';
 let bgPattern = null;
 
-tileset.onload = () => {
-  bgPattern = makePatternFromTile(tileset, TILESET_SIZE, TILE_COL, TILE_ROW, TILE_SCALE, TILE_GUTTER);
+tilesImg.onload = () => {
+  const isSingleTile = (tilesImg.width === SHEET_TILE_SIZE && tilesImg.height === SHEET_TILE_SIZE);
+  let off = document.createElement('canvas');
+  let octx = off.getContext('2d');
+  octx.imageSmoothingEnabled = false;
+
+  if (isSingleTile) {
+    // Scale the single tile to keep pixels crisp
+    off.width  = tilesImg.width  * SHEET_SCALE;
+    off.height = tilesImg.height * SHEET_SCALE;
+    octx.drawImage(tilesImg, 0, 0, off.width, off.height);
+  } else {
+    // Crop the chosen tile from the sheet, then scale
+    const sx = TILE_COL * (SHEET_TILE_SIZE + SHEET_GUTTER) + SHEET_GUTTER;
+    const sy = TILE_ROW * (SHEET_TILE_SIZE + SHEET_GUTTER) + SHEET_GUTTER;
+    off.width  = SHEET_TILE_SIZE * SHEET_SCALE;
+    off.height = SHEET_TILE_SIZE * SHEET_SCALE;
+    octx.drawImage(tilesImg, sx, sy, SHEET_TILE_SIZE, SHEET_TILE_SIZE, 0, 0, off.width, off.height);
+  }
+  bgPattern = ctx.createPattern(off, 'repeat');
 };
 
-function makePatternFromTile(img, tileSize, col, row, scale=3, gutter=0){
-  const sx = col * (tileSize + gutter) + gutter;
-  const sy = row * (tileSize + gutter) + gutter;
+tilesImg.onerror = () => {
+  console.warn('tiles.png not found or failed to load — using solid background.');
+  bgPattern = null;
+};
 
-  const off = document.createElement('canvas');
-  off.width  = tileSize * scale;
-  off.height = tileSize * scale;
-  const octx = off.getContext('2d');
-  octx.imageSmoothingEnabled = false;
-  octx.drawImage(img, sx, sy, tileSize, tileSize, 0, 0, off.width, off.height);
-
-  return ctx.createPattern(off, 'repeat');
-}
-
-/* ===== Box sprites ===== */
+/* ===== Box sprites (random + 0/90/180/270 rotation) ===== */
 const BOX_FILES = ['Sprite-0020.png','Sprite-0021.png','Sprite-0022.png','Sprite-0023.png'];
 const BOX_SPRITES = BOX_FILES.map(src => { const i = new Image(); i.src = src; return i; });
 
@@ -78,7 +93,7 @@ function randRotation(){ return (randInt(4) * Math.PI) / 2; }
 /* ===== Game state ===== */
 let state = "menu";
 let score = 0, highScore = Number(localStorage.getItem("highScore") || 0);
-let speed = 8;
+let speed = 8;       // lower = faster
 let levelSpeed = 1;
 let tick = 0;
 
@@ -125,7 +140,7 @@ function spawnFood(){
 function consumeInput(){
   while (INPUTS.length){
     const cand = INPUTS.shift();
-    if (snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue;
+    if (snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue; // no instant reverse
     nextDir = cand; return;
   }
 }
@@ -141,11 +156,14 @@ function update(){
 
   const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
 
+  // walls
   if (head.x<0 || head.y<0 || head.x>=COLS || head.y>=ROWS){ state='gameOver'; persistHighScore(); showOverlay(); return; }
+  // self
   if (snake.some(s=>s.x===head.x && s.y===head.y)){ state='gameOver'; persistHighScore(); showOverlay(); return; }
 
   snake.unshift(head);
 
+  // food
   if (head.x===food.x && head.y===food.y){
     score += 10;
     tailGrow += 1;
@@ -158,6 +176,7 @@ function update(){
 }
 
 function draw(){
+  // Always clear the whole canvas first
   if (bgPattern){
     ctx.save();
     ctx.imageSmoothingEnabled = false;
@@ -169,21 +188,30 @@ function draw(){
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
+  // Food
   drawFood(food.x, food.y, food.sprite, food.rotation);
-  drawTape();
+
+  // Snake: hide on menu/gameOver to avoid the "stuck snake" look
+  if (state === 'playing' || state === 'paused'){
+    drawTape();
+  }
 }
 
 function drawFood(gx, gy, sprite, rotationRad){
   const tileX = gx * TILE;
   const tileY = gy * TILE;
 
+  // Placeholder if not loaded yet
   if (!sprite || !sprite.complete || sprite.naturalWidth === 0){
     ctx.fillStyle = "#c9a66b";
     ctx.fillRect(tileX+BOX_PAD, tileY+BOX_PAD, TILE-BOX_PAD*2, TILE-BOX_PAD*2);
     return;
   }
 
-  const drawSize = TILE - BOX_PAD*2;
+  const maxSize = TILE - BOX_PAD*2;
+  const base = Math.min(sprite.width, sprite.height, maxSize);
+  const drawSize = Math.min(maxSize, Math.round(base * BOX_SCALE));  // scale up a bit
+
   const cx = tileX + TILE/2;
   const cy = tileY + TILE/2;
 
@@ -201,7 +229,7 @@ function drawTape(){
     ctx.fillStyle = COL.tape; ctx.fillRect(x+2, y+2, TILE-4, TILE-4);
     ctx.fillStyle = COL.tapeSeam; ctx.fillRect(x+2, y+(TILE/2|0), TILE-4, 2);
 
-    if (i===0){
+    if (i===0){ // tape nose
       ctx.fillStyle = "#fadf95";
       if (dir.x===1){ ctx.fillRect(x+TILE-4, y+6, 4, TILE-12); }
       else if (dir.x===-1){ ctx.fillRect(x, y+6, 4, TILE-12); }
