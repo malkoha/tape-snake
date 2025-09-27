@@ -169,28 +169,42 @@ function draw(){
   drawTape();
 }
 
-function drawFood(gx,gy,sprite,rot){
-  const baseX = gx*TILE, baseY = gy*TILE;
-  const max   = TILE - BOX_PAD*2;
-  const size  = Math.round(max * BOX_SCALE);
+function drawFood(gx, gy, sprite, rot){
+  const tileX = gx * TILE, tileY = gy * TILE;
+  const avail = TILE - BOX_PAD * 2;          // max drawable size inside cell
 
   // placeholder if not loaded yet
-  if(!sprite || !sprite.img || !sprite.img.complete || sprite.img.naturalWidth===0){
-    ctx.fillStyle="#c9a66b";
-    ctx.fillRect(baseX+BOX_PAD, baseY+BOX_PAD, size, size);
+  if(!sprite || !sprite.img || !sprite.img.complete || sprite.img.naturalWidth === 0){
+    const s = Math.floor(avail * BOX_FIT);
+    ctx.fillStyle = "#c9a66b";
+    ctx.fillRect(tileX + (TILE - s)/2, tileY + (TILE - s)/2, s, s);
     return;
   }
 
-  const {img,sx,sy,sw,sh} = sprite;
-  const cx = baseX + TILE/2, cy = baseY + TILE/2;
+  const { img, sx, sy, sw, sh } = sprite;
+
+  // preserve aspect ratio and CLAMP to the cell
+  let dw, dh;
+  const target = Math.floor(avail * BOX_FIT);
+  if (sw >= sh) {                 // wider than tall
+    dw = target;
+    dh = Math.round(target * (sh / sw));
+  } else {                        // taller than wide
+    dh = target;
+    dw = Math.round(target * (sw / sh));
+  }
+
+  const cx = tileX + TILE/2;
+  const cy = tileY + TILE/2;
 
   ctx.save();
-  ctx.imageSmoothingEnabled=false;
+  ctx.imageSmoothingEnabled = false;
   ctx.translate(cx, cy);
-  ctx.rotate(rot);
-  ctx.drawImage(img, sx, sy, sw, sh, -size/2, -size/2, size, size);
+  ctx.rotate(rot);                // 0/90/180/270 — keeps bounds the same
+  ctx.drawImage(img, sx, sy, sw, sh, -dw/2, -dh/2, dw, dh);
   ctx.restore();
 }
+
 
 function drawTape(){
   for(let i=0;i<snake.length;i++){
