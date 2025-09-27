@@ -16,7 +16,7 @@
 <body>
 <canvas id="c" width="720" height="504"></canvas>
 <div class="ui">
-  <div class="top" id="hud">Score: 0 · Speed: 1</div>
+  <div class="top" id="hud">Score: 0 · High: 0 · Speed: 1</div>
   <div class="center" id="overlay"></div>
 </div>
 
@@ -29,41 +29,56 @@ ctx.imageSmoothingEnabled = false;
 const TILE = 24;
 const COLS = Math.floor(canvas.width / TILE);
 const ROWS = Math.floor(canvas.height / TILE);
+const BOX_PAD = 3;
 
 const COL = {
   bg: "#0e1116",
-  box: "#c9a66b",
-  boxEdge: "#9f7f4f",
   tape: "#f5d27b",
   tapeSeam: "#e9c56a",
   text: "#dbe2ff"
 };
 
-/* ===== Background: 8-bit tile pattern =====
-   - Put a 16x16 image named `tiles.png` next to this file.
-   - We scale it by an integer (2/3/4) to keep pixels crisp. */
-const tileImg = new Image();
-tileImg.src = 'tiles.png'; // <-- your 16x16 tile here
+/* ===== Background using tiles.png ===== */
+const TILESET_SIZE = 16;
+const TILE_SCALE = 3;
+const TILE_COL = 2;
+const TILE_ROW = 1;
+const TILE_GUTTER = 0;
+
+const tileset = new Image();
+tileset.src = 'tiles.png';
 let bgPattern = null;
 
-function makeScaledPattern(img, scale = 3) {
+tileset.onload = () => {
+  bgPattern = makePatternFromTile(tileset, TILESET_SIZE, TILE_COL, TILE_ROW, TILE_SCALE, TILE_GUTTER);
+};
+
+function makePatternFromTile(img, tileSize, col, row, scale=3, gutter=0){
+  const sx = col * (tileSize + gutter) + gutter;
+  const sy = row * (tileSize + gutter) + gutter;
+
   const off = document.createElement('canvas');
-  off.width = img.width * scale;
-  off.height = img.height * scale;
+  off.width  = tileSize * scale;
+  off.height = tileSize * scale;
   const octx = off.getContext('2d');
   octx.imageSmoothingEnabled = false;
-  octx.drawImage(img, 0, 0, off.width, off.height);
+  octx.drawImage(img, sx, sy, tileSize, tileSize, 0, 0, off.width, off.height);
+
   return ctx.createPattern(off, 'repeat');
 }
 
-tileImg.onload = () => {
-  bgPattern = makeScaledPattern(tileImg, 3); // try 2, 3, or 4
-};
+/* ===== Box sprites ===== */
+const BOX_FILES = ['Sprite-0020.png','Sprite-0021.png','Sprite-0022.png','Sprite-0023.png'];
+const BOX_SPRITES = BOX_FILES.map(src => { const i = new Image(); i.src = src; return i; });
+
+function randInt(n){ return Math.floor(Math.random()*n); }
+function randChoice(arr){ return arr[randInt(arr.length)]; }
+function randRotation(){ return (randInt(4) * Math.PI) / 2; }
 
 /* ===== Game state ===== */
 let state = "menu";
 let score = 0, highScore = Number(localStorage.getItem("highScore") || 0);
-let speed = 8; // lower is faster per movement tick
+let speed = 8;
 let levelSpeed = 1;
 let tick = 0;
 
@@ -98,15 +113,19 @@ function reset(){
 
 function spawnFood(){
   while(true){
-    const f = {x:(Math.random()*COLS|0), y:(Math.random()*ROWS|0)};
-    if (!snake.some(s=>s.x===f.x && s.y===f.y)) return f;
+    const candidate = {x:(Math.random()*COLS|0), y:(Math.random()*ROWS|0)};
+    if (snake.some(s=>s.x===candidate.x && s.y===candidate.y)) continue;
+
+    const sprite = randChoice(BOX_SPRITES);
+    const rotation = randRotation();
+    return { ...candidate, sprite, rotation };
   }
 }
 
 function consumeInput(){
   while (INPUTS.length){
     const cand = INPUTS.shift();
-    if (snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue; // no instant reverse
+    if (snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue;
     nextDir = cand; return;
   }
 }
@@ -122,14 +141,11 @@ function update(){
 
   const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
 
-  // walls
   if (head.x<0 || head.y<0 || head.x>=COLS || head.y>=ROWS){ state='gameOver'; persistHighScore(); showOverlay(); return; }
-  // self
   if (snake.some(s=>s.x===head.x && s.y===head.y)){ state='gameOver'; persistHighScore(); showOverlay(); return; }
 
   snake.unshift(head);
 
-  // food
   if (head.x===food.x && head.y===food.y){
     score += 10;
     tailGrow += 1;
@@ -142,7 +158,6 @@ function update(){
 }
 
 function draw(){
-  // --- Background: use pattern if loaded, else fallback solid ---
   if (bgPattern){
     ctx.save();
     ctx.imageSmoothingEnabled = false;
@@ -154,22 +169,30 @@ function draw(){
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  // No more corrugation stripes — pattern replaces them.
-
-  // Box + Tape
-  drawBox(food.x, food.y);
+  drawFood(food.x, food.y, food.sprite, food.rotation);
   drawTape();
 }
 
-function drawBox(gx, gy){
-  const x = gx*TILE, y = gy*TILE;
-  ctx.fillStyle = COL.box; ctx.fillRect(x+4, y+4, TILE-8, TILE-8);
-  ctx.fillStyle = COL.boxEdge;
-  ctx.fillRect(x+4, y+4, TILE-8, 2);
-  ctx.fillRect(x+4, y+TILE-6, TILE-8, 2);
-  ctx.fillRect(x+4, y+4, 2, TILE-8);
-  ctx.fillRect(x+TILE-6, y+4, 2, TILE-8);
-  ctx.fillStyle="#ddb97a"; ctx.fillRect(x+6, y+(TILE/2|0)-1, TILE-12, 2); // hint seam
+function drawFood(gx, gy, sprite, rotationRad){
+  const tileX = gx * TILE;
+  const tileY = gy * TILE;
+
+  if (!sprite || !sprite.complete || sprite.naturalWidth === 0){
+    ctx.fillStyle = "#c9a66b";
+    ctx.fillRect(tileX+BOX_PAD, tileY+BOX_PAD, TILE-BOX_PAD*2, TILE-BOX_PAD*2);
+    return;
+  }
+
+  const drawSize = TILE - BOX_PAD*2;
+  const cx = tileX + TILE/2;
+  const cy = tileY + TILE/2;
+
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.translate(cx, cy);
+  ctx.rotate(rotationRad);
+  ctx.drawImage(sprite, -drawSize/2, -drawSize/2, drawSize, drawSize);
+  ctx.restore();
 }
 
 function drawTape(){
@@ -178,7 +201,7 @@ function drawTape(){
     ctx.fillStyle = COL.tape; ctx.fillRect(x+2, y+2, TILE-4, TILE-4);
     ctx.fillStyle = COL.tapeSeam; ctx.fillRect(x+2, y+(TILE/2|0), TILE-4, 2);
 
-    if (i===0){ // little tape nose
+    if (i===0){
       ctx.fillStyle = "#fadf95";
       if (dir.x===1){ ctx.fillRect(x+TILE-4, y+6, 4, TILE-12); }
       else if (dir.x===-1){ ctx.fillRect(x, y+6, 4, TILE-12); }
