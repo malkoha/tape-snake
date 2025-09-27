@@ -1,0 +1,217 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Tape Snake</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html,body{margin:0;background:#151821;color:#dbe2ff;font-family:monospace}
+    #c{display:block;margin:0 auto;image-rendering:pixelated}
+    .ui{position:fixed;inset:0;pointer-events:none}
+    .top{position:absolute;left:8px;top:6px;font-size:14px;opacity:.9}
+    .center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center}
+    .btn{display:inline-block;margin-top:10px;padding:6px 10px;border:1px solid #dbe2ff;border-radius:6px}
+  </style>
+</head>
+<body>
+<canvas id="c" width="720" height="504"></canvas>
+<div class="ui">
+  <div class="top" id="hud">Score: 0 · Speed: 1</div>
+  <div class="center" id="overlay"></div>
+</div>
+
+<script>
+/* ===== Canvas & grid ===== */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+const TILE = 32;
+const COLS = Math.floor(canvas.width / TILE);
+const ROWS = Math.floor(canvas.height / TILE);
+
+const COL = { bg:"#0e1116", tape:"#f5d27b", tapeSeam:"#e9c56a", text:"#dbe2ff" };
+
+/* ===== Background: single 16×16 tiles.png repeated ===== */
+const BG_SCALE = 2; // 2/3/4 (integer) for chunky pixels
+let bgPattern = null;
+
+const bgImg = new Image();
+bgImg.onload = () => {
+  const off = document.createElement('canvas');
+  off.width  = bgImg.width  * BG_SCALE;
+  off.height = bgImg.height * BG_SCALE;
+  const octx = off.getContext('2d');
+  octx.imageSmoothingEnabled = false;
+  octx.drawImage(bgImg, 0, 0, off.width, off.height);
+  bgPattern = ctx.createPattern(off, 'repeat');
+};
+bgImg.src = 'tiles.png';
+
+function drawBackground(){
+  if (bgPattern){
+    ctx.save(); ctx.imageSmoothingEnabled=false;
+    ctx.fillStyle = bgPattern;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = COL.bg; ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
+}
+
+/* ===== Box sprites: crop transparent edges, fit inside tile (NO rotation) ===== */
+const BOX_FILES = ['Sprite-0020.png','Sprite-0021.png','Sprite-0022.png','Sprite-0023.png'];
+const BOX_PAD = 1;        // small border inside tile (1–2 looks good)
+const BOX_FIT = 0.92;     // % of tile to fill (0.85–0.95). Increase for bigger boxes.
+
+const BOX_SPRITES = [];   // each: {img, sx, sy, sw, sh}
+BOX_FILES.forEach(src=>{
+  const img = new Image();
+  img.onload = () => BOX_SPRITES.push({ img, ...tightCrop(img) });
+  img.src = src;
+});
+
+function tightCrop(img){
+  const w=img.width, h=img.height;
+  const off=document.createElement('canvas'); off.width=w; off.height=h;
+  const o=off.getContext('2d'); o.imageSmoothingEnabled=false;
+  o.drawImage(img,0,0);
+  const data=o.getImageData(0,0,w,h).data;
+  let minX=w, minY=h, maxX=-1, maxY=-1;
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const a=data[(y*w+x)*4+3];
+    if(a>8){ if(x<minX)minX=x; if(y<minY)minY=y; if(x>maxX)maxX=x; if(y>maxY)maxY=y; }
+  }
+  if(maxX<minX||maxY<minY) return {sx:0,sy:0,sw:w,sh:h}; // fully transparent fallback
+  return {sx:minX, sy:minY, sw:maxX-minX+1, sh:maxY-minY+1};
+}
+
+const randi = n => Math.floor(Math.random()*n);
+const choice = a => a[randi(a.length)];
+
+/* ===== Game state ===== */
+let state="menu", score=0, speed=8, levelSpeed=1, tick=0;
+let snake, dir, nextDir, food, tailGrow;
+
+const INPUTS=[], DIRS={
+  ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0},
+  w:{x:0,y:-1},s:{x:0,y:1},a:{x:-1,y:0},d:{x:1,y:0}
+};
+
+addEventListener('keydown', e=>{
+  if (e.key==='p'||e.key==='P'){ state=state==='playing'?'paused':state==='paused'?'playing':state; showOverlay(); return; }
+  if (e.key==='r'||e.key==='R'){ reset(); state='playing'; showOverlay(); return; }
+  if (state==='menu'){ reset(); state='playing'; showOverlay(); return; }
+  if (state==='gameOver'){ reset(); state='playing'; showOverlay(); return; }
+  const v=DIRS[e.key]; if(!v) return; INPUTS.push(v);
+});
+
+function reset(){
+  score=0; levelSpeed=1; speed=8; tick=0;
+  snake=[{x:5,y:(ROWS/2|0)}];
+  dir={x:1,y:0}; nextDir=dir; tailGrow=0;
+  food=spawnFood();
+  updateHUD();
+}
+
+function spawnFood(){
+  while(true){
+    const gx=(Math.random()*COLS|0), gy=(Math.random()*ROWS|0);
+    if (snake.some(s=>s.x===gx&&s.y===gy)) continue;
+    const sprite = BOX_SPRITES.length ? choice(BOX_SPRITES) : null; // no rotation
+    return { x:gx, y:gy, sprite };
+  }
+}
+
+function consumeInput(){
+  while(INPUTS.length){
+    const cand=INPUTS.shift();
+    if(snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue; // prevent 180°
+    nextDir=cand; return;
+  }
+}
+
+function update(){
+  if(state!=='playing') return;
+  tick++; if(tick%speed) return;
+
+  consumeInput(); dir=nextDir;
+  const head={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
+
+  if(head.x<0||head.y<0||head.x>=COLS||head.y>=ROWS){ state='gameOver'; showOverlay(); return; }
+  if(snake.some(s=>s.x===head.x&&s.y===head.y)){ state='gameOver'; showOverlay(); return; }
+
+  snake.unshift(head);
+
+  if(head.x===food.x&&head.y===food.y){
+    score+=10; tailGrow+=1; food=spawnFood();
+    if(score%50===0 && speed>4){ speed--; levelSpeed++; }
+    updateHUD();
+  }
+  if(tailGrow>0) tailGrow--; else snake.pop();
+}
+
+function draw(){
+  drawBackground();                    // tiled floor
+  drawFood(food.x, food.y, food.sprite);
+  drawTape();
+}
+
+function drawFood(gx, gy, sprite){
+  const tileX = gx * TILE, tileY = gy * TILE;
+  const avail = TILE - BOX_PAD * 2;              // max drawable size inside cell
+
+  // placeholder if not loaded yet
+  if(!sprite || !sprite.img || !sprite.img.complete || sprite.img.naturalWidth===0){
+    const s = Math.floor(avail * BOX_FIT);
+    ctx.fillStyle = "#c9a66b";
+    ctx.fillRect(tileX + (TILE - s)/2, tileY + (TILE - s)/2, s, s);
+    return;
+  }
+
+  const { img, sx, sy, sw, sh } = sprite;
+
+  // preserve aspect ratio and clamp to the cell
+  let dw, dh;
+  const target = Math.floor(avail * BOX_FIT);
+  if (sw >= sh) { dw = target; dh = Math.round(target * (sh / sw)); }
+  else          { dh = target; dw = Math.round(target * (sw / sh)); }
+
+  const dx = tileX + Math.round((TILE - dw) / 2);
+  const dy = tileY + Math.round((TILE - dh) / 2);
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+}
+
+function drawTape(){
+  for(let i=0;i<snake.length;i++){
+    const s=snake[i], x=s.x*TILE, y=s.y*TILE;
+    ctx.fillStyle=COL.tape; ctx.fillRect(x+2,y+2,TILE-4,TILE-4);
+    ctx.fillStyle=COL.tapeSeam; ctx.fillRect(x+2,y+(TILE/2|0),TILE-4,2);
+    if(i===0){ ctx.fillStyle="#fadf95";
+      if(dir.x===1){ ctx.fillRect(x+TILE-4,y+6,4,TILE-12); }
+      else if(dir.x===-1){ ctx.fillRect(x,y+6,4,TILE-12); }
+      else if(dir.y===1){ ctx.fillRect(x+6,y+TILE-4,TILE-12,4); }
+      else if(dir.y===-1){ ctx.fillRect(x+6,y,TILE-12,4); }
+    }
+  }
+}
+
+/* ===== HUD / overlay ===== */
+const hud=document.getElementById('hud'), overlay=document.getElementById('overlay');
+function updateHUD(){ hud.textContent=`Score: ${score} · Speed: ${levelSpeed}`; }
+function showOverlay(){
+  if(state==='menu'){ overlay.innerHTML=`<div><h1>TAPE SNAKE</h1><div>Seal cartons. Avoid jams.</div><div>Use Arrow Keys or WASD</div><div class="btn">Press any key to start</div></div>`; }
+  else if(state==='paused'){ overlay.innerHTML=`<div><h2>Paused</h2><div class="btn">Press P to resume</div></div>`; }
+  else if(state==='gameOver'){ overlay.innerHTML=`<div><h2>Line Jammed!</h2><div>Score: ${score}</div><div class="btn">Press R to restart</div></div>`; }
+  else { overlay.innerHTML=''; }
+  overlay.style.display=(state==='playing')?'none':'block';
+}
+
+/* ===== Main loop ===== */
+function loop(){ update(); draw(); requestAnimationFrame(loop); }
+reset(); showOverlay(); loop();
+</script>
+</body>
+</html>
