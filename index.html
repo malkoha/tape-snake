@@ -5,8 +5,8 @@
   <title>Tape Snake</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    html,body{ margin:0; background:#151821; color:#dbe2ff; font-family:monospace }
-    #c{ display:block; margin:0 auto; image-rendering:pixelated; }
+    html,body{margin:0;background:#151821;color:#dbe2ff;font-family:monospace}
+    #c{display:block;margin:0 auto;image-rendering:pixelated}
     .ui{position:fixed;inset:0;pointer-events:none}
     .top{position:absolute;left:8px;top:6px;font-size:14px;opacity:.9}
     .center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center}
@@ -21,202 +21,139 @@
 </div>
 
 <script>
-/* ===== Canvas & constants ===== */
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
-const TILE = 24;
-const COLS = Math.floor(canvas.width / TILE);
-const ROWS = Math.floor(canvas.height / TILE);
+// ===== GRID / COLORS =====
+const TILE = 24, COLS = Math.floor(canvas.width/TILE), ROWS = Math.floor(canvas.height/TILE);
+const COL = { bg:"#0e1116", containerStripe:"#1b2030", tape:"#f5d27b", tapeSeam:"#e9c56a", text:"#dbe2ff" };
 
-const COL = {
-  bg: "#0e1116",
-  box: "#c9a66b",
-  boxEdge: "#9f7f4f",
-  tape: "#f5d27b",
-  tapeSeam: "#e9c56a",
-  text: "#dbe2ff"
-};
+// ===== BOX SPRITES (fills cell; tweak PAD/SCALE if needed) =====
+const BOX_FILES = ['Sprite-0020.png','Sprite-0021.png','Sprite-0022.png','Sprite-0023.png'];
+const BOX_SPRITES = BOX_FILES.map(src => { const i = new Image(); i.src = src; return i; });
+const BOX_PAD = 2;          // inset from tile edge (px)
+const BOX_SCALE = 1.0;      // 1.0 fills (TILE - 2*PAD). Try 1.1 if your PNGs have transparent margins.
 
-/* ===== Background: 8-bit tile pattern =====
-   - Put a 16x16 image named `tiles.png` next to this file.
-   - We scale it by an integer (2/3/4) to keep pixels crisp. */
-const tileImg = new Image();
-tileImg.src = 'tiles.png'; // <-- your 16x16 tile here
-let bgPattern = null;
-
-function makeScaledPattern(img, scale = 3) {
-  const off = document.createElement('canvas');
-  off.width = img.width * scale;
-  off.height = img.height * scale;
-  const octx = off.getContext('2d');
-  octx.imageSmoothingEnabled = false;
-  octx.drawImage(img, 0, 0, off.width, off.height);
-  return ctx.createPattern(off, 'repeat');
-}
-
-tileImg.onload = () => {
-  bgPattern = makeScaledPattern(tileImg, 3); // try 2, 3, or 4
-};
-
-/* ===== Game state ===== */
-let state = "menu";
-let score = 0, highScore = Number(localStorage.getItem("highScore") || 0);
-let speed = 8; // lower is faster per movement tick
-let levelSpeed = 1;
-let tick = 0;
-
+// ===== GAME STATE =====
+let state="menu", score=0, speed=8, levelSpeed=1, tick=0;
 let snake, dir, nextDir, food, tailGrow;
 
-const INPUTS = [];
-const DIRS = {
-  ArrowUp:{x:0,y:-1}, ArrowDown:{x:0,y:1}, ArrowLeft:{x:-1,y:0}, ArrowRight:{x:1,y:0},
-  w:{x:0,y:-1}, s:{x:0,y:1}, a:{x:-1,y:0}, d:{x:1,y:0}
-};
-
+const INPUTS=[], DIRS={ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0},w:{x:0,y:-1},s:{x:0,y:1},a:{x:-1,y:0},d:{x:1,y:0}};
 addEventListener('keydown', e=>{
-  if (e.key==='p'||e.key==='P'){ state = state==='playing' ? 'paused' : (state==='paused' ? 'playing' : state); showOverlay(); return; }
+  if (e.key==='p'||e.key==='P'){ state=state==='playing'?'paused':state==='paused'?'playing':state; showOverlay(); return; }
   if (e.key==='r'||e.key==='R'){ reset(); state='playing'; showOverlay(); return; }
   if (state==='menu'){ reset(); state='playing'; showOverlay(); return; }
   if (state==='gameOver'){ reset(); state='playing'; showOverlay(); return; }
-  const v = DIRS[e.key]; if(!v) return; INPUTS.push(v);
+  const v=DIRS[e.key]; if(!v) return; INPUTS.push(v);
 });
 
 function reset(){
-  score = 0;
-  speed = 8;
-  levelSpeed = 1;
-  tick = 0;
-  snake = [{x:5, y:(ROWS/2|0)}];
-  dir = {x:1,y:0};
-  nextDir = dir;
-  tailGrow = 0;
-  food = spawnFood();
+  score=0; levelSpeed=1; speed=8; tick=0;
+  snake=[{x:5,y:(ROWS/2|0)}];
+  dir={x:1,y:0}; nextDir=dir; tailGrow=0;
+  food=spawnFood();
   updateHUD();
 }
 
 function spawnFood(){
+  // pick a free grid cell
   while(true){
-    const f = {x:(Math.random()*COLS|0), y:(Math.random()*ROWS|0)};
-    if (!snake.some(s=>s.x===f.x && s.y===f.y)) return f;
+    const gx=(Math.random()*COLS|0), gy=(Math.random()*ROWS|0);
+    if (snake.some(s=>s.x===gx&&s.y===gy)) continue;
+    // attach a random sprite + rotation (0/90/180/270)
+    const sprite = BOX_SPRITES[(Math.random()*BOX_SPRITES.length)|0];
+    const rotation = ((Math.random()*4)|0) * Math.PI/2;
+    return {x:gx, y:gy, sprite, rotation};
   }
 }
 
 function consumeInput(){
-  while (INPUTS.length){
-    const cand = INPUTS.shift();
-    if (snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue; // no instant reverse
-    nextDir = cand; return;
+  while(INPUTS.length){
+    const cand=INPUTS.shift();
+    if(snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue; // prevent 180° reverse
+    nextDir=cand; return;
   }
 }
 
-/* ===== Update / Draw ===== */
 function update(){
-  if (state!=='playing') return;
-  tick++;
-  if (tick % speed) return;
+  if(state!=='playing') return;
+  tick++; if(tick%speed) return;
 
-  consumeInput();
-  dir = nextDir;
+  consumeInput(); dir=nextDir;
+  const head={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
 
-  const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
-
-  // walls
-  if (head.x<0 || head.y<0 || head.x>=COLS || head.y>=ROWS){ state='gameOver'; persistHighScore(); showOverlay(); return; }
-  // self
-  if (snake.some(s=>s.x===head.x && s.y===head.y)){ state='gameOver'; persistHighScore(); showOverlay(); return; }
+  if(head.x<0||head.y<0||head.x>=COLS||head.y>=ROWS){ state='gameOver'; showOverlay(); return; }
+  if(snake.some(s=>s.x===head.x&&s.y===head.y)){ state='gameOver'; showOverlay(); return; }
 
   snake.unshift(head);
 
-  // food
-  if (head.x===food.x && head.y===food.y){
-    score += 10;
-    tailGrow += 1;
-    food = spawnFood();
-    if (score % 50 === 0 && speed > 4){ speed--; levelSpeed++; }
+  if(head.x===food.x&&head.y===food.y){
+    score+=10; tailGrow+=1; food=spawnFood();
+    if(score%50===0 && speed>4){ speed--; levelSpeed++; }
     updateHUD();
   }
-
-  if (tailGrow>0) tailGrow--; else snake.pop();
+  if(tailGrow>0) tailGrow--; else snake.pop();
 }
 
 function draw(){
-  // --- Background: use pattern if loaded, else fallback solid ---
-  if (bgPattern){
-    ctx.save();
-    ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = bgPattern;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.restore();
-  } else {
-    ctx.fillStyle = COL.bg;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-  }
+  // background (your old corrugation)
+  ctx.fillStyle=COL.bg; ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle=COL.containerStripe; for(let y=0;y<ROWS;y+=2) ctx.fillRect(0,y*TILE,canvas.width,1);
 
-  // No more corrugation stripes — pattern replaces them.
+  // draw food sprite (fills cell)
+  drawFood(food.x, food.y, food.sprite, food.rotation);
 
-  // Box + Tape
-  drawBox(food.x, food.y);
+  // draw tape snake
   drawTape();
 }
 
-function drawBox(gx, gy){
+function drawFood(gx, gy, sprite, rotationRad){
   const x = gx*TILE, y = gy*TILE;
-  ctx.fillStyle = COL.box; ctx.fillRect(x+4, y+4, TILE-8, TILE-8);
-  ctx.fillStyle = COL.boxEdge;
-  ctx.fillRect(x+4, y+4, TILE-8, 2);
-  ctx.fillRect(x+4, y+TILE-6, TILE-8, 2);
-  ctx.fillRect(x+4, y+4, 2, TILE-8);
-  ctx.fillRect(x+TILE-6, y+4, 2, TILE-8);
-  ctx.fillStyle="#ddb97a"; ctx.fillRect(x+6, y+(TILE/2|0)-1, TILE-12, 2); // hint seam
+  const max = TILE - BOX_PAD*2;
+  const size = Math.round(max * BOX_SCALE);
+
+  // if image not ready, draw a placeholder that fills the cell
+  if(!sprite || !sprite.complete || sprite.naturalWidth===0){
+    ctx.fillStyle = "#c9a66b";
+    ctx.fillRect(x+BOX_PAD, y+BOX_PAD, size, size);
+    return;
+  }
+
+  const cx = x + TILE/2, cy = y + TILE/2;
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.translate(cx, cy);
+  ctx.rotate(rotationRad);
+  ctx.drawImage(sprite, -size/2, -size/2, size, size);
+  ctx.restore();
 }
 
 function drawTape(){
-  for (let i=0;i<snake.length;i++){
-    const s = snake[i], x = s.x*TILE, y = s.y*TILE;
-    ctx.fillStyle = COL.tape; ctx.fillRect(x+2, y+2, TILE-4, TILE-4);
-    ctx.fillStyle = COL.tapeSeam; ctx.fillRect(x+2, y+(TILE/2|0), TILE-4, 2);
-
-    if (i===0){ // little tape nose
-      ctx.fillStyle = "#fadf95";
-      if (dir.x===1){ ctx.fillRect(x+TILE-4, y+6, 4, TILE-12); }
-      else if (dir.x===-1){ ctx.fillRect(x, y+6, 4, TILE-12); }
-      else if (dir.y===1){ ctx.fillRect(x+6, y+TILE-4, TILE-12, 4); }
-      else if (dir.y===-1){ ctx.fillRect(x+6, y, TILE-12, 4); }
+  for(let i=0;i<snake.length;i++){
+    const s=snake[i], x=s.x*TILE, y=s.y*TILE;
+    ctx.fillStyle=COL.tape; ctx.fillRect(x+2,y+2,TILE-4,TILE-4);
+    ctx.fillStyle=COL.tapeSeam; ctx.fillRect(x+2,y+(TILE/2|0),TILE-4,2);
+    if(i===0){ ctx.fillStyle="#fadf95";
+      if(dir.x===1){ ctx.fillRect(x+TILE-4,y+6,4,TILE-12); }
+      else if(dir.x===-1){ ctx.fillRect(x,y+6,4,TILE-12); }
+      else if(dir.y===1){ ctx.fillRect(x+6,y+TILE-4,TILE-12,4); }
+      else if(dir.y===-1){ ctx.fillRect(x+6,y,TILE-12,4); }
     }
   }
 }
 
-/* ===== HUD / Overlay ===== */
-const hud = document.getElementById('hud');
-const overlay = document.getElementById('overlay');
-
-function persistHighScore(){
-  if (score > highScore){
-    highScore = score;
-    localStorage.setItem("highScore", String(highScore));
-  }
-}
-
-function updateHUD(){
-  hud.textContent = `Score: ${score} · High: ${highScore} · Speed: ${levelSpeed}`;
-}
-
+// ===== HUD / OVERLAY =====
+const hud=document.getElementById('hud'), overlay=document.getElementById('overlay');
+function updateHUD(){ hud.textContent=`Score: ${score} · Speed: ${levelSpeed}`; }
 function showOverlay(){
-  if (state==='menu'){
-    overlay.innerHTML = `<div><h1>TAPE SNAKE</h1><div>Seal cartons. Avoid jams.</div><div>Arrow Keys or WASD</div><div class="btn">Press any key to start</div></div>`;
-  } else if (state==='paused'){
-    overlay.innerHTML = `<div><h2>Paused</h2><div class="btn">Press P to resume</div></div>`;
-  } else if (state==='gameOver'){
-    overlay.innerHTML = `<div><h2>Line Jammed!</h2><div>Score: ${score} (High: ${highScore})</div><div class="btn">Press R to restart</div></div>`;
-  } else {
-    overlay.innerHTML = '';
-  }
-  overlay.style.display = (state==='playing') ? 'none' : 'block';
+  if(state==='menu'){ overlay.innerHTML=`<div><h1>TAPE SNAKE</h1><div>Seal cartons. Avoid jams.</div><div>Use Arrow Keys or WASD</div><div class="btn">Press any key to start</div></div>`; }
+  else if(state==='paused'){ overlay.innerHTML=`<div><h2>Paused</h2><div class="btn">Press P to resume</div></div>`; }
+  else if(state==='gameOver'){ overlay.innerHTML=`<div><h2>Line Jammed!</h2><div>Score: ${score}</div><div class="btn">Press R to restart</div></div>`; }
+  else { overlay.innerHTML=''; }
+  overlay.style.display=(state==='playing')?'none':'block';
 }
 
-/* ===== Main loop ===== */
 function loop(){ update(); draw(); requestAnimationFrame(loop); }
 reset(); showOverlay(); loop();
 </script>
