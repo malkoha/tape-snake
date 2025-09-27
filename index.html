@@ -26,14 +26,14 @@ const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
-const TILE = 24;
+const TILE = 32;
 const COLS = Math.floor(canvas.width / TILE);
 const ROWS = Math.floor(canvas.height / TILE);
 
 const COL = { bg:"#0e1116", tape:"#f5d27b", tapeSeam:"#e9c56a", text:"#dbe2ff" };
 
 /* ===== Background: single 16×16 tiles.png repeated ===== */
-const BG_SCALE = 3; // 2/3/4 (integer) for chunky pixels
+const BG_SCALE = 2; // 2/3/4 (integer) for chunky pixels
 let bgPattern = null;
 
 const bgImg = new Image();
