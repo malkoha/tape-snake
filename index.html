@@ -21,64 +21,62 @@
 </div>
 
 <script>
-/* ========== Canvas / grid ========== */
+/* ===== Canvas & grid ===== */
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 ctx.imageSmoothingEnabled = false;
 
 const TILE = 24;
-const COLS = Math.floor(canvas.width/TILE);
-const ROWS = Math.floor(canvas.height/TILE);
+const COLS = Math.floor(canvas.width / TILE);
+const ROWS = Math.floor(canvas.height / TILE);
 
 const COL = { bg:"#0e1116", tape:"#f5d27b", tapeSeam:"#e9c56a", text:"#dbe2ff" };
 
-/* ========== BACKGROUND from tiles.png (single tile OR tileset) ==========
-
-Place tiles.png next to index.html.
-
-- If tiles.png is 16x16, we scale it (integer) and repeat.
-- If it's a sheet (e.g., 96x96), we crop one cell (TILE_COL/TILE_ROW) and repeat.
-*/
-const SHEET_CELL = 16;     // inner cell size inside tiles.png if it's a sheet
-const SHEET_GUTTER = 0;    // set 1 if your sheet has 1px gaps
-const BG_SCALE = 3;        // 2/3/4 -> keeps pixels chunky
-const TILE_COL = 2;        // only used when tiles.png is a sheet
-const TILE_ROW = 1;
-
-const bgImg = new Image();
-bgImg.src = 'tiles.png';
+/* ===== Background: single 16×16 tiles.png repeated ===== */
+const BG_SCALE = 3; // integer 2/3/4 keeps pixels chunky
 let bgPattern = null;
 
+const bgImg = new Image();
 bgImg.onload = () => {
-  const single = (bgImg.width === SHEET_CELL && bgImg.height === SHEET_CELL);
+  if (bgImg.width !== 16 || bgImg.height !== 16) {
+    console.warn('tiles.png is expected to be 16x16. Loaded:', bgImg.width+'x'+bgImg.height);
+  }
   const off = document.createElement('canvas');
+  off.width  = bgImg.width  * BG_SCALE;
+  off.height = bgImg.height * BG_SCALE;
   const octx = off.getContext('2d');
   octx.imageSmoothingEnabled = false;
-
-  if (single){
-    off.width = bgImg.width * BG_SCALE;
-    off.height = bgImg.height * BG_SCALE;
-    octx.drawImage(bgImg, 0, 0, off.width, off.height);
-  }else{
-    const sx = TILE_COL*(SHEET_CELL+SHEET_GUTTER) + SHEET_GUTTER;
-    const sy = TILE_ROW*(SHEET_CELL+SHEET_GUTTER) + SHEET_GUTTER;
-    off.width = SHEET_CELL * BG_SCALE;
-    off.height = SHEET_CELL * BG_SCALE;
-    octx.drawImage(bgImg, sx, sy, SHEET_CELL, SHEET_CELL, 0, 0, off.width, off.height);
-  }
+  octx.drawImage(bgImg, 0, 0, off.width, off.height);
   bgPattern = ctx.createPattern(off, 'repeat');
 };
+bgImg.onerror = () => console.error('tiles.png failed to load; is it next to index.html and named exactly tiles.png?');
+bgImg.src = 'tiles.png';
 
-/* ========== BOX SPRITES (crop transparent edges, rotate, fill cell) ========== */
+function drawBackground(){
+  if (bgPattern){
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = bgPattern;
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.restore();
+  } else {
+    // visible fallback while image loads
+    ctx.fillStyle = COL.bg; ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
+}
+
+/* ===== Box sprites: crop transparent edges + rotate ===== */
 const BOX_FILES = ['Sprite-0020.png','Sprite-0021.png','Sprite-0022.png','Sprite-0023.png'];
-const BOX_PAD = 2;       // inset from tile edge
-const BOX_SCALE = 1.08;  // bump if PNGs still look a hair small
+const BOX_PAD   = 2;     // inset (px) inside the 24×24 tile
+const BOX_SCALE = 1.08;  // 1.0 ~ fills (TILE - 2*PAD); bump if still a hair small
 
-const BOX_SPRITES = [];  // each: {img, sx, sy, sw, sh}
-BOX_FILES.forEach(src=>{
-  const img=new Image();
-  img.onload=()=>BOX_SPRITES.push({img, ...tightCrop(img)});
-  img.src=src;
+// Each sprite becomes { img, sx, sy, sw, sh } where (sx,sy,sw,sh) is the tight opaque crop
+const BOX_SPRITES = [];
+BOX_FILES.forEach(src => {
+  const img = new Image();
+  img.onload = () => BOX_SPRITES.push({ img, ...tightCrop(img) });
+  img.onerror = () => console.warn('Could not load sprite:', src);
+  img.src = src;
 });
 
 function tightCrop(img){
@@ -88,18 +86,21 @@ function tightCrop(img){
   octx.drawImage(img,0,0);
   const data=octx.getImageData(0,0,w,h).data;
   let minX=w, minY=h, maxX=-1, maxY=-1;
-  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
-    const a=data[(y*w+x)*4+3];
-    if(a>8){ if(x<minX)minX=x; if(y<minY)minY=y; if(x>maxX)maxX=x; if(y>maxY)maxY=y; }
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const a=data[(y*w+x)*4+3];
+      if(a>8){ if(x<minX)minX=x; if(y<minY)minY=y; if(x>maxX)maxX=x; if(y>maxY)maxY=y; }
+    }
   }
-  if(maxX<minX||maxY<minY) return {sx:0,sy:0,sw:w,sh:h}; // fully transparent fallback
+  if(maxX<minX||maxY<minY) return {sx:0,sy:0,sw:w,sh:h}; // fallback if fully transparent
   return {sx:minX, sy:minY, sw:maxX-minX+1, sh:maxY-minY+1};
 }
-const randi=n=>Math.floor(Math.random()*n);
-const choice=a=>a[randi(a.length)];
-const randRot=()=> (randi(4)*Math.PI)/2;
 
-/* ========== Game state ========== */
+const randi = n => Math.floor(Math.random()*n);
+const choice = a => a[randi(a.length)];
+const randRot = () => (randi(4) * Math.PI) / 2; // 0/90/180/270
+
+/* ===== Game state ===== */
 let state="menu", score=0, speed=8, levelSpeed=1, tick=0;
 let snake, dir, nextDir, food, tailGrow;
 
@@ -109,10 +110,10 @@ const INPUTS=[], DIRS={
 };
 
 addEventListener('keydown', e=>{
-  if(e.key==='p'||e.key==='P'){ state=state==='playing'?'paused':state==='paused'?'playing':state; showOverlay(); return; }
-  if(e.key==='r'||e.key==='R'){ reset(); state='playing'; showOverlay(); return; }
-  if(state==='menu'){ reset(); state='playing'; showOverlay(); return; }
-  if(state==='gameOver'){ reset(); state='playing'; showOverlay(); return; }
+  if (e.key==='p'||e.key==='P'){ state=state==='playing'?'paused':state==='paused'?'playing':state; showOverlay(); return; }
+  if (e.key==='r'||e.key==='R'){ reset(); state='playing'; showOverlay(); return; }
+  if (state==='menu'){ reset(); state='playing'; showOverlay(); return; }
+  if (state==='gameOver'){ reset(); state='playing'; showOverlay(); return; }
   const v=DIRS[e.key]; if(!v) return; INPUTS.push(v);
 });
 
@@ -128,6 +129,7 @@ function spawnFood(){
   while(true){
     const gx=(Math.random()*COLS|0), gy=(Math.random()*ROWS|0);
     if (snake.some(s=>s.x===gx&&s.y===gy)) continue;
+
     const sprite = BOX_SPRITES.length ? choice(BOX_SPRITES) : null;
     return { x:gx, y:gy, sprite, rotation: randRot() };
   }
@@ -136,7 +138,7 @@ function spawnFood(){
 function consumeInput(){
   while(INPUTS.length){
     const cand=INPUTS.shift();
-    if(snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue;
+    if(snake.length>1 && cand.x===-dir.x && cand.y===-dir.y) continue; // no 180° reverse
     nextDir=cand; return;
   }
 }
@@ -147,6 +149,7 @@ function update(){
 
   consumeInput(); dir=nextDir;
   const head={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
+
   if(head.x<0||head.y<0||head.x>=COLS||head.y>=ROWS){ state='gameOver'; showOverlay(); return; }
   if(snake.some(s=>s.x===head.x&&s.y===head.y)){ state='gameOver'; showOverlay(); return; }
 
@@ -161,37 +164,25 @@ function update(){
 }
 
 function draw(){
-  // --- background pattern or solid fallback ---
-  if (bgPattern){
-    ctx.save(); ctx.imageSmoothingEnabled=false;
-    ctx.fillStyle = bgPattern;
-    ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.restore();
-  } else {
-    ctx.fillStyle=COL.bg; ctx.fillRect(0,0,canvas.width,canvas.height);
-  }
-
-  // --- food sprite ---
+  drawBackground();                    // tiled floor
   drawFood(food.x, food.y, food.sprite, food.rotation);
-
-  // --- snake ---
   drawTape();
 }
 
 function drawFood(gx,gy,sprite,rot){
-  const x=gx*TILE, y=gy*TILE;
-  const max = TILE - BOX_PAD*2;
-  const size = Math.round(max * BOX_SCALE);
+  const baseX = gx*TILE, baseY = gy*TILE;
+  const max   = TILE - BOX_PAD*2;
+  const size  = Math.round(max * BOX_SCALE);
 
+  // placeholder if not loaded yet
   if(!sprite || !sprite.img || !sprite.img.complete || sprite.img.naturalWidth===0){
-    // placeholder fills cell
     ctx.fillStyle="#c9a66b";
-    ctx.fillRect(x+BOX_PAD, y+BOX_PAD, size, size);
+    ctx.fillRect(baseX+BOX_PAD, baseY+BOX_PAD, size, size);
     return;
   }
 
   const {img,sx,sy,sw,sh} = sprite;
-  const cx = x + TILE/2, cy = y + TILE/2;
+  const cx = baseX + TILE/2, cy = baseY + TILE/2;
 
   ctx.save();
   ctx.imageSmoothingEnabled=false;
@@ -215,7 +206,7 @@ function drawTape(){
   }
 }
 
-/* ========== HUD / overlay ========== */
+/* ===== HUD / overlay ===== */
 const hud=document.getElementById('hud'), overlay=document.getElementById('overlay');
 function updateHUD(){ hud.textContent=`Score: ${score} · Speed: ${levelSpeed}`; }
 function showOverlay(){
@@ -226,7 +217,7 @@ function showOverlay(){
   overlay.style.display=(state==='playing')?'none':'block';
 }
 
-/* ========== Main loop ========== */
+/* ===== Main loop ===== */
 function loop(){ update(); draw(); requestAnimationFrame(loop); }
 reset(); showOverlay(); loop();
 </script>
