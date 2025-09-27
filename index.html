@@ -16,7 +16,7 @@
 <body>
 <canvas id="c" width="720" height="504"></canvas>
 <div class="ui">
-  <div class="top" id="hud">Score: 0 · High: 0 · Speed: 1</div>
+  <div class="top" id="hud">Score: 0 · Speed: 1</div>
   <div class="center" id="overlay"></div>
 </div>
 
@@ -30,70 +30,40 @@ const TILE = 24;
 const COLS = Math.floor(canvas.width / TILE);
 const ROWS = Math.floor(canvas.height / TILE);
 
-// Box drawing tweaks
-const BOX_PAD   = 2;     // inset from cell edges
-const BOX_SCALE = 1.25;  // scale sprite inside the cell (1.0..1.5 is reasonable)
-
 const COL = {
   bg: "#0e1116",
+  box: "#c9a66b",
+  boxEdge: "#9f7f4f",
   tape: "#f5d27b",
   tapeSeam: "#e9c56a",
   text: "#dbe2ff"
 };
 
-/* ===== Background: tiles.png (single tile or tileset) =====
-   - If tiles.png is 16x16 (single tile), use it directly.
-   - If it's a sheet (e.g., 96x96), pick (TILE_COL, TILE_ROW) from the grid.
-*/
-const SHEET_TILE_SIZE = 16;  // each cell inside the sheet
-const SHEET_GUTTER    = 0;   // set to 1 if your sheet has 1px padding between tiles
-const SHEET_SCALE     = 3;   // integer 2/3/4 for chunky pixels
-const TILE_COL        = 2;   // 0-based, only used when tiles.png is a sheet
-const TILE_ROW        = 1;
-
-const tilesImg = new Image();
-tilesImg.src = 'tiles.png';
+/* ===== Background: 8-bit tile pattern =====
+   - Put a 16x16 image named `tiles.png` next to this file.
+   - We scale it by an integer (2/3/4) to keep pixels crisp. */
+const tileImg = new Image();
+tileImg.src = 'tiles.png'; // <-- your 16x16 tile here
 let bgPattern = null;
 
-tilesImg.onload = () => {
-  const isSingleTile = (tilesImg.width === SHEET_TILE_SIZE && tilesImg.height === SHEET_TILE_SIZE);
-  let off = document.createElement('canvas');
-  let octx = off.getContext('2d');
+function makeScaledPattern(img, scale = 3) {
+  const off = document.createElement('canvas');
+  off.width = img.width * scale;
+  off.height = img.height * scale;
+  const octx = off.getContext('2d');
   octx.imageSmoothingEnabled = false;
+  octx.drawImage(img, 0, 0, off.width, off.height);
+  return ctx.createPattern(off, 'repeat');
+}
 
-  if (isSingleTile) {
-    // Scale the single tile to keep pixels crisp
-    off.width  = tilesImg.width  * SHEET_SCALE;
-    off.height = tilesImg.height * SHEET_SCALE;
-    octx.drawImage(tilesImg, 0, 0, off.width, off.height);
-  } else {
-    // Crop the chosen tile from the sheet, then scale
-    const sx = TILE_COL * (SHEET_TILE_SIZE + SHEET_GUTTER) + SHEET_GUTTER;
-    const sy = TILE_ROW * (SHEET_TILE_SIZE + SHEET_GUTTER) + SHEET_GUTTER;
-    off.width  = SHEET_TILE_SIZE * SHEET_SCALE;
-    off.height = SHEET_TILE_SIZE * SHEET_SCALE;
-    octx.drawImage(tilesImg, sx, sy, SHEET_TILE_SIZE, SHEET_TILE_SIZE, 0, 0, off.width, off.height);
-  }
-  bgPattern = ctx.createPattern(off, 'repeat');
+tileImg.onload = () => {
+  bgPattern = makeScaledPattern(tileImg, 3); // try 2, 3, or 4
 };
-
-tilesImg.onerror = () => {
-  console.warn('tiles.png not found or failed to load — using solid background.');
-  bgPattern = null;
-};
-
-/* ===== Box sprites (random + 0/90/180/270 rotation) ===== */
-const BOX_FILES = ['Sprite-0020.png','Sprite-0021.png','Sprite-0022.png','Sprite-0023.png'];
-const BOX_SPRITES = BOX_FILES.map(src => { const i = new Image(); i.src = src; return i; });
-
-function randInt(n){ return Math.floor(Math.random()*n); }
-function randChoice(arr){ return arr[randInt(arr.length)]; }
-function randRotation(){ return (randInt(4) * Math.PI) / 2; }
 
 /* ===== Game state ===== */
 let state = "menu";
 let score = 0, highScore = Number(localStorage.getItem("highScore") || 0);
-let speed = 8;       // lower = faster
+let speed = 8; // lower is faster per movement tick
 let levelSpeed = 1;
 let tick = 0;
 
@@ -128,12 +98,8 @@ function reset(){
 
 function spawnFood(){
   while(true){
-    const candidate = {x:(Math.random()*COLS|0), y:(Math.random()*ROWS|0)};
-    if (snake.some(s=>s.x===candidate.x && s.y===candidate.y)) continue;
-
-    const sprite = randChoice(BOX_SPRITES);
-    const rotation = randRotation();
-    return { ...candidate, sprite, rotation };
+    const f = {x:(Math.random()*COLS|0), y:(Math.random()*ROWS|0)};
+    if (!snake.some(s=>s.x===f.x && s.y===f.y)) return f;
   }
 }
 
@@ -176,7 +142,7 @@ function update(){
 }
 
 function draw(){
-  // Always clear the whole canvas first
+  // --- Background: use pattern if loaded, else fallback solid ---
   if (bgPattern){
     ctx.save();
     ctx.imageSmoothingEnabled = false;
@@ -188,39 +154,22 @@ function draw(){
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  // Food
-  drawFood(food.x, food.y, food.sprite, food.rotation);
+  // No more corrugation stripes — pattern replaces them.
 
-  // Snake: hide on menu/gameOver to avoid the "stuck snake" look
-  if (state === 'playing' || state === 'paused'){
-    drawTape();
-  }
+  // Box + Tape
+  drawBox(food.x, food.y);
+  drawTape();
 }
 
-function drawFood(gx, gy, sprite, rotationRad){
-  const tileX = gx * TILE;
-  const tileY = gy * TILE;
-
-  // Placeholder if not loaded yet
-  if (!sprite || !sprite.complete || sprite.naturalWidth === 0){
-    ctx.fillStyle = "#c9a66b";
-    ctx.fillRect(tileX+BOX_PAD, tileY+BOX_PAD, TILE-BOX_PAD*2, TILE-BOX_PAD*2);
-    return;
-  }
-
-  const maxSize = TILE - BOX_PAD*2;
-  const base = Math.min(sprite.width, sprite.height, maxSize);
-  const drawSize = Math.min(maxSize, Math.round(base * BOX_SCALE));  // scale up a bit
-
-  const cx = tileX + TILE/2;
-  const cy = tileY + TILE/2;
-
-  ctx.save();
-  ctx.imageSmoothingEnabled = false;
-  ctx.translate(cx, cy);
-  ctx.rotate(rotationRad);
-  ctx.drawImage(sprite, -drawSize/2, -drawSize/2, drawSize, drawSize);
-  ctx.restore();
+function drawBox(gx, gy){
+  const x = gx*TILE, y = gy*TILE;
+  ctx.fillStyle = COL.box; ctx.fillRect(x+4, y+4, TILE-8, TILE-8);
+  ctx.fillStyle = COL.boxEdge;
+  ctx.fillRect(x+4, y+4, TILE-8, 2);
+  ctx.fillRect(x+4, y+TILE-6, TILE-8, 2);
+  ctx.fillRect(x+4, y+4, 2, TILE-8);
+  ctx.fillRect(x+TILE-6, y+4, 2, TILE-8);
+  ctx.fillStyle="#ddb97a"; ctx.fillRect(x+6, y+(TILE/2|0)-1, TILE-12, 2); // hint seam
 }
 
 function drawTape(){
@@ -229,7 +178,7 @@ function drawTape(){
     ctx.fillStyle = COL.tape; ctx.fillRect(x+2, y+2, TILE-4, TILE-4);
     ctx.fillStyle = COL.tapeSeam; ctx.fillRect(x+2, y+(TILE/2|0), TILE-4, 2);
 
-    if (i===0){ // tape nose
+    if (i===0){ // little tape nose
       ctx.fillStyle = "#fadf95";
       if (dir.x===1){ ctx.fillRect(x+TILE-4, y+6, 4, TILE-12); }
       else if (dir.x===-1){ ctx.fillRect(x, y+6, 4, TILE-12); }
